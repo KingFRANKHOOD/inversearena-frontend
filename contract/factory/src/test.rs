@@ -6,6 +6,7 @@ use soroban_sdk::{
 };
 
 const TIMELOCK: u64 = 48 * 60 * 60; // 48 hours
+const MIN_STAKE: i128 = 10_000_000; // 10 XLM in stroops
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,148 @@ fn test_initialize_sets_admin() {
 fn test_double_initialize_panics() {
     let (_env, admin, client) = setup();
     client.initialize(&admin);
+}
+
+// ── whitelist management ───────────────────────────────────────────────────────
+
+#[test]
+fn test_add_to_whitelist() {
+    let (env, _admin, client) = setup();
+    let host = Address::generate(&env);
+    assert!(!client.is_whitelisted(&host));
+    client.add_to_whitelist(&host);
+    assert!(client.is_whitelisted(&host));
+}
+
+#[test]
+fn test_remove_from_whitelist() {
+    let (env, _admin, client) = setup();
+    let host = Address::generate(&env);
+    client.add_to_whitelist(&host);
+    assert!(client.is_whitelisted(&host));
+    client.remove_from_whitelist(&host);
+    assert!(!client.is_whitelisted(&host));
+}
+
+#[test]
+#[should_panic(expected = "not initialized")]
+fn test_is_whitelisted_when_not_initialized() {
+    let env = Env::default();
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    let host = Address::generate(&env);
+    client.is_whitelisted(&host);
+}
+
+// ── minimum stake ──────────────────────────────────────────────────────────────
+
+#[test]
+fn test_get_default_min_stake() {
+    let (_env, _admin, client) = setup();
+    assert_eq!(client.get_min_stake(), MIN_STAKE);
+}
+
+#[test]
+fn test_set_min_stake() {
+    let (_env, _admin, client) = setup();
+    let new_min = 5_000_000i128; // 5 XLM
+    client.set_min_stake(&new_min);
+    assert_eq!(client.get_min_stake(), new_min);
+}
+
+#[test]
+#[should_panic(expected = "stake amount cannot be negative")]
+fn test_set_negative_min_stake_panics() {
+    let (_env, _admin, client) = setup();
+    client.set_min_stake(&-1000);
+}
+
+// ── create_pool authorization ──────────────────────────────────────────────────
+
+#[test]
+fn test_admin_can_create_pool() {
+    let (env, admin, client) = setup();
+    let wasm_hash = dummy_hash(&env);
+    client.set_arena_wasm_hash(&wasm_hash);
+    let creator = Address::generate(&env);
+    let stake = MIN_STAKE + 1_000_000;
+    client.create_pool(&admin, &creator, &stake);
+}
+
+#[test]
+fn test_whitelisted_host_can_create_pool() {
+    let (env, _admin, client) = setup();
+    let host = Address::generate(&env);
+    client.add_to_whitelist(&host);
+
+    let wasm_hash = dummy_hash(&env);
+    client.set_arena_wasm_hash(&wasm_hash);
+    let creator = Address::generate(&env);
+    let stake = MIN_STAKE + 1_000_000;
+    client.create_pool(&host, &creator, &stake);
+}
+
+#[test]
+#[should_panic(expected = "caller is not authorized to create pools")]
+fn test_unauthorized_caller_cannot_create_pool() {
+    let (env, _admin, client) = setup();
+    let wasm_hash = dummy_hash(&env);
+    client.set_arena_wasm_hash(&wasm_hash);
+    let unauthorized = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let stake = MIN_STAKE + 1_000_000;
+    client.create_pool(&unauthorized, &creator, &stake);
+}
+
+// ── create_pool stake validation ────────────────────────────────────────────────
+
+#[test]
+fn test_create_pool_with_stake_equal_to_minimum_succeeds() {
+    let (env, admin, client) = setup();
+    let wasm_hash = dummy_hash(&env);
+    client.set_arena_wasm_hash(&wasm_hash);
+    let creator = Address::generate(&env);
+    client.create_pool(&admin, &creator, &MIN_STAKE);
+}
+
+#[test]
+#[should_panic(expected = "stake amount")]
+fn test_create_pool_with_stake_below_minimum_panics() {
+    let (env, admin, client) = setup();
+    let wasm_hash = dummy_hash(&env);
+    client.set_arena_wasm_hash(&wasm_hash);
+    let creator = Address::generate(&env);
+    let stake = MIN_STAKE - 1;
+    client.create_pool(&admin, &creator, &stake);
+}
+
+#[test]
+#[should_panic(expected = "stake amount")]
+fn test_create_pool_with_zero_stake_panics() {
+    let (env, admin, client) = setup();
+    let wasm_hash = dummy_hash(&env);
+    client.set_arena_wasm_hash(&wasm_hash);
+    let creator = Address::generate(&env);
+    client.create_pool(&admin, &creator, &0);
+}
+
+#[test]
+#[should_panic(expected = "stake amount")]
+fn test_create_pool_with_negative_stake_panics() {
+    let (env, admin, client) = setup();
+    let wasm_hash = dummy_hash(&env);
+    client.set_arena_wasm_hash(&wasm_hash);
+    let creator = Address::generate(&env);
+    client.create_pool(&admin, &creator, &-1000);
+}
+
+#[test]
+#[should_panic(expected = "arena WASM hash not set")]
+fn test_create_pool_without_wasm_hash_panics() {
+    let (env, admin, client) = setup();
+    let creator = Address::generate(&env);
+    let stake = MIN_STAKE + 1_000_000;
+    client.create_pool(&admin, &creator, &stake);
 }
 
 // ── propose_upgrade ───────────────────────────────────────────────────────────
