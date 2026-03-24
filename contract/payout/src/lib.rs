@@ -34,6 +34,8 @@ impl PayoutContract {
     /// None — open to any caller.
     pub fn hello(env: Env) -> u32 {
         789
+    }
+
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&ADMIN_KEY) {
             panic!("already initialized");
