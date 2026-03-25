@@ -5,6 +5,7 @@ use soroban_sdk::{
 };
 
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
+const SCHEMA_VERSION_KEY: Symbol = symbol_short!("S_VER");
 const TREASURY_KEY: Symbol = symbol_short!("TREASURY");
 const TOPIC_PAYOUT_EXECUTED: Symbol = symbol_short!("PAYOUT");
 const TOPIC_DUST_COLLECTED: Symbol = symbol_short!("DUST");
@@ -12,6 +13,9 @@ const TOPIC_DUST_COLLECTED: Symbol = symbol_short!("DUST");
 /// Event payload version. Include in every event data tuple so consumers
 /// can detect schema changes without re-deploying indexers.
 const EVENT_VERSION: u32 = 1;
+
+/// Current schema version. Bump this when storage layout changes.
+const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 //
@@ -48,7 +52,9 @@ pub enum PayoutError {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
-    Payout(Symbol, u32, Address),
+    // Payout record domain-separated by `context` plus the tuple
+    // `(pool_id, round_id)` and the `winner` identity.
+    Payout(Symbol, u32, u32, Address),
 }
 
 #[contracterror]
@@ -92,6 +98,51 @@ impl PayoutContract {
             return Err(PayoutError::AlreadyInitialized);
         }
         env.storage().instance().set(&ADMIN_KEY, &admin);
+        env.storage()
+            .instance()
+            .set(&SCHEMA_VERSION_KEY, &CURRENT_SCHEMA_VERSION);
+        Ok(())
+    }
+
+    // ── Schema versioning ────────────────────────────────────────────────────
+
+    /// Return the persisted schema version (0 if never set).
+    pub fn schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&SCHEMA_VERSION_KEY)
+            .unwrap_or(0u32)
+    }
+
+    /// Migrate storage from the current persisted version to
+    /// `CURRENT_SCHEMA_VERSION`. Admin-only.
+    ///
+    /// Each version bump should have its own migration block inside
+    /// this function. The version is written atomically at the end so
+    /// a failed transaction leaves the old version in place.
+    ///
+    /// Calling `migrate` when already at the current version is a no-op.
+    pub fn migrate(env: Env) -> Result<(), PayoutError> {
+        let admin = require_admin(&env)?;
+        admin.require_auth();
+
+        let stored: u32 = env
+            .storage()
+            .instance()
+            .get(&SCHEMA_VERSION_KEY)
+            .unwrap_or(0u32);
+
+        if stored >= CURRENT_SCHEMA_VERSION {
+            return Ok(()); // already up to date
+        }
+
+        // -- v0 -> v1: initial version stamp (no data changes) ------
+        // Future migrations go here as sequential if-blocks:
+        //   if stored < 2 { /* v1 -> v2 migration logic */ }
+
+        env.storage()
+            .instance()
+            .set(&SCHEMA_VERSION_KEY, &CURRENT_SCHEMA_VERSION);
         Ok(())
     }
 
@@ -124,15 +175,18 @@ impl PayoutContract {
 
     /// Distribute winnings to a winner. Admin-only.
     ///
-    /// Uses a `(context, idempotency_key, winner)` triple to prevent
-    /// double-pays. The `context` field provides domain separation so the
-    /// same payout contract can serve multiple arenas or game modes without
-    /// risk of key collision.
+    /// Uses a `(context, pool_id, round_id, winner)` tuple to prevent
+    /// double-pays.
+    ///
+    /// This avoids relying on a single external `u32` sequence that might be
+    /// recycled across multiple pools/rounds, which could otherwise lead to
+    /// denial-of-service by causing false "AlreadyProcessed" collisions.
     ///
     /// # Arguments
     /// * `caller` - Must be the admin address.
     /// * `context` - Domain namespace (e.g. `"arena_1"`, `"tourney"`).
-    /// * `idempotency_key` - Unique key within the context preventing duplicate payouts.
+    /// * `pool_id` - Arena/pool identifier.
+    /// * `round_id` - Round identifier within the pool.
     /// * `winner` - Recipient address.
     /// * `amount` - Amount to pay; must be > 0.
     /// * `currency` - Currency symbol (e.g. `XLM`, `USDC`).
@@ -149,7 +203,8 @@ impl PayoutContract {
         env: Env,
         caller: Address,
         context: Symbol,
-        idempotency_key: u32,
+        pool_id: u32,
+        round_id: u32,
         winner: Address,
         amount: i128,
         currency: Address,
@@ -164,7 +219,7 @@ impl PayoutContract {
             return Err(PayoutError::InvalidAmount);
         }
 
-        let payout_key = DataKey::Payout(context, idempotency_key, winner.clone());
+        let payout_key = DataKey::Payout(context, pool_id, round_id, winner.clone());
         if env
             .storage()
             .instance()
@@ -236,8 +291,14 @@ impl PayoutContract {
     ///
     /// # Authorization
     /// None — read-only, open to any caller.
-    pub fn is_payout_processed(env: Env, context: Symbol, idempotency_key: u32, winner: Address) -> bool {
-        let payout_key = DataKey::Payout(context, idempotency_key, winner);
+    pub fn is_payout_processed(
+        env: Env,
+        context: Symbol,
+        pool_id: u32,
+        round_id: u32,
+        winner: Address,
+    ) -> bool {
+        let payout_key = DataKey::Payout(context, pool_id, round_id, winner);
         env.storage()
             .instance()
             .get::<_, PayoutData>(&payout_key)
@@ -249,8 +310,14 @@ impl PayoutContract {
     ///
     /// # Authorization
     /// None — read-only, open to any caller.
-    pub fn get_payout(env: Env, context: Symbol, idempotency_key: u32, winner: Address) -> Option<PayoutData> {
-        let payout_key = DataKey::Payout(context, idempotency_key, winner);
+    pub fn get_payout(
+        env: Env,
+        context: Symbol,
+        pool_id: u32,
+        round_id: u32,
+        winner: Address,
+    ) -> Option<PayoutData> {
+        let payout_key = DataKey::Payout(context, pool_id, round_id, winner);
         env.storage().instance().get(&payout_key)
     }
 }
