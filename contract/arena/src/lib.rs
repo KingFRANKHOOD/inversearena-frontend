@@ -890,11 +890,19 @@ impl ArenaContract {
             .expect("not initialized");
         admin.require_auth();
 
+        let has_pending_hash = env.storage().instance().has(&PENDING_HASH_KEY);
+        let has_execute_after = env.storage().instance().has(&EXECUTE_AFTER_KEY);
+        match (has_pending_hash, has_execute_after) {
+            (false, false) => panic!("no pending upgrade"),
+            (true, false) | (false, true) => panic!("malformed upgrade state"),
+            (true, true) => {}
+        }
+
         let execute_after: u64 = env
             .storage()
             .instance()
             .get(&EXECUTE_AFTER_KEY)
-            .expect("no pending upgrade");
+            .expect("malformed upgrade state");
 
         if env.ledger().timestamp() < execute_after {
             panic!("timelock has not expired");
@@ -904,7 +912,7 @@ impl ArenaContract {
             .storage()
             .instance()
             .get(&PENDING_HASH_KEY)
-            .expect("no pending upgrade");
+            .expect("malformed upgrade state");
 
         // Clear pending state before upgrading.
         env.storage().instance().remove(&PENDING_HASH_KEY);
