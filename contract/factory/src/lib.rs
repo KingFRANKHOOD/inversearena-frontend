@@ -83,6 +83,8 @@ pub enum Error {
     InvalidCapacity = 10,
     /// `create_pool` called before `set_arena_wasm_hash` has been called.
     WasmHashNotSet = 11,
+    /// Pending upgrade state is only partially present.
+    MalformedUpgradeState = 12,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -394,11 +396,19 @@ impl FactoryContract {
         let admin = require_admin(&env)?;
         admin.require_auth();
 
+        let has_pending_hash = env.storage().instance().has(&PENDING_HASH_KEY);
+        let has_execute_after = env.storage().instance().has(&EXECUTE_AFTER_KEY);
+        match (has_pending_hash, has_execute_after) {
+            (false, false) => return Err(Error::NoPendingUpgrade),
+            (true, false) | (false, true) => return Err(Error::MalformedUpgradeState),
+            (true, true) => {}
+        }
+
         let execute_after: u64 = env
             .storage()
             .instance()
             .get(&EXECUTE_AFTER_KEY)
-            .ok_or(Error::NoPendingUpgrade)?;
+            .ok_or(Error::MalformedUpgradeState)?;
 
         if env.ledger().timestamp() < execute_after {
             return Err(Error::TimelockNotExpired);
@@ -408,7 +418,7 @@ impl FactoryContract {
             .storage()
             .instance()
             .get(&PENDING_HASH_KEY)
-            .ok_or(Error::NoPendingUpgrade)?;
+            .ok_or(Error::MalformedUpgradeState)?;
 
         // Clear pending state before upgrading.
         env.storage().instance().remove(&PENDING_HASH_KEY);

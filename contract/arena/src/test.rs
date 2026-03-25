@@ -347,6 +347,34 @@ fn test_execute_without_proposal_panics() {
 }
 
 #[test]
+#[should_panic(expected = "malformed upgrade state")]
+fn test_execute_upgrade_rejects_missing_execute_after() {
+    let (env, _admin, client) = setup_with_admin();
+    let contract_id = client.address.clone();
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&PENDING_HASH_KEY, &dummy_hash(&env));
+    });
+
+    client.execute_upgrade();
+}
+
+#[test]
+#[should_panic(expected = "malformed upgrade state")]
+fn test_execute_upgrade_rejects_missing_pending_hash() {
+    let (env, _admin, client) = setup_with_admin();
+    let contract_id = client.address.clone();
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&EXECUTE_AFTER_KEY, &(env.ledger().timestamp() + TIMELOCK + 1));
+    });
+
+    client.execute_upgrade();
+}
+
+#[test]
 #[should_panic(expected = "timelock has not expired")]
 fn test_execute_before_timelock_panics() {
     let (env, _admin, client) = setup_with_admin();

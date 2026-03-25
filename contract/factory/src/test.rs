@@ -273,6 +273,34 @@ fn test_execute_without_proposal_returns_no_pending_upgrade() {
 }
 
 #[test]
+fn test_execute_with_only_pending_hash_returns_malformed_upgrade_state() {
+    let (env, _admin, client) = setup();
+    let contract_id = client.address.clone();
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&PENDING_HASH_KEY, &dummy_hash(&env));
+    });
+
+    let result = client.try_execute_upgrade();
+    assert_eq!(result, Err(Ok(Error::MalformedUpgradeState)));
+}
+
+#[test]
+fn test_execute_with_only_execute_after_returns_malformed_upgrade_state() {
+    let (env, _admin, client) = setup();
+    let contract_id = client.address.clone();
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&EXECUTE_AFTER_KEY, &(env.ledger().timestamp() + TIMELOCK + 1));
+    });
+
+    let result = client.try_execute_upgrade();
+    assert_eq!(result, Err(Ok(Error::MalformedUpgradeState)));
+}
+
+#[test]
 fn test_execute_before_timelock_returns_timelock_not_expired() {
     let (env, _admin, client) = setup();
     client.propose_upgrade(&dummy_hash(&env));
