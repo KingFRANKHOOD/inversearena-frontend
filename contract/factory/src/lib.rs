@@ -403,6 +403,17 @@ impl FactoryContract {
 
         Ok(arena_address)
     }
+    pub fn add_supported_token(env: Env, token: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::SupportedToken(token), &true);
+    }
 
     // ── Upgrade mechanism ────────────────────────────────────────────────────
 

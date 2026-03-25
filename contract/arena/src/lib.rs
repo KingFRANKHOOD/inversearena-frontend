@@ -22,6 +22,7 @@ const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE_P");
 const GAME_STATUS_KEY: Symbol = symbol_short!("G_STATUS");
 
 const SCHEMA_VERSION_KEY: Symbol = symbol_short!("S_VER");
+const GAME_STATUS_KEY: Symbol = symbol_short!("G_STAT");
 
 /// Current schema version. Bump this when storage layout changes.
 const CURRENT_SCHEMA_VERSION: u32 = 1;
@@ -73,6 +74,7 @@ pub enum ArenaError {
     TokenNotSet = 19,
     /// Per-round submission storage would exceed [`bounds::MAX_SUBMISSIONS_PER_ROUND`](crate::bounds::MAX_SUBMISSIONS_PER_ROUND).
     MaxSubmissionsPerRound = 20,
+
     PlayerEliminated = 21,
 }
 
@@ -129,6 +131,16 @@ pub struct FullStateView {
     pub potential_payout: i128,
     pub is_active: bool,
     pub has_won: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArenaState {
+    pub survivors_count: u32,
+    pub max_capacity: u32,
+    pub round_number: u32,
+    pub current_stake: i128,
+    pub potential_payout: i128,
 }
 
 #[contracttype]
