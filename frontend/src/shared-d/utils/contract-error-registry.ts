@@ -24,6 +24,8 @@ export const CONTRACT_PANIC_USER_MESSAGES: Readonly<Record<number, string>> =
     202: "This round is not valid for the current game.",
     203: "Choices are not being accepted right now.",
     204: "There is nothing to claim right now.",
+    // Arena `ArenaError` (Rust enum numeric codes — see contract/ERRORS.md)
+    20: "This round has reached the maximum number of submissions.",
     // Staking 300–399
     300: "Stake amount is invalid.",
     301: "Staking is temporarily unavailable.",

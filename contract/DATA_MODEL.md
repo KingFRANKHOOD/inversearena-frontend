@@ -37,7 +37,7 @@ File: `contract/arena/src/lib.rs`
 | --- | --- | --- |
 | `DataKey::Config` | `ArenaConfig` | Round speed configuration; written once on `init` |
 | `DataKey::Round` | `RoundState` | Active round state (number, ledgers, submission count, flags) |
-| `DataKey::Submission(round_number, player)` | `Choice` | A player's Heads/Tails choice for a given round |
+| `DataKey::Submission(round_number, player)` | `Choice` | A player's Heads/Tails choice for a given round (bounded per round — see `contract/BOUNDS.md`) |
 | `DataKey::Survivor(player)` | `()` | Marker set when a player successfully joins; used to verify eligibility in `claim` |
 | `DataKey::PrizeClaimed(winner)` | `i128` | Records the prize amount claimed by the winner; prevents double-claim |
 

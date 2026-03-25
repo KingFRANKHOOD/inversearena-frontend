@@ -3,6 +3,7 @@
 extern crate std;
 use std::vec::Vec;
 
+use super::invariants;
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
@@ -1477,12 +1478,17 @@ fn get_arena_state_reflects_round_number() {
 /// After `join()`, `survivors_count` increases and subsequent reads are consistent.
 #[test]
 fn get_arena_state_reflects_survivor_count() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let client = create_client(&env);
+    let (env, admin, client) = setup_with_admin();
+    let (_token, token_id) = setup_token(&env, &admin);
+    let asset = StellarAssetClient::new(&env, &token_id);
+    asset.mint(&client.address, &1_000_000i128);
+    client.set_token(&token_id);
 
+    env.mock_all_auths();
     let player_a = Address::generate(&env);
     let player_b = Address::generate(&env);
+    asset.mint(&player_a, &10_000i128);
+    asset.mint(&player_b, &10_000i128);
 
     // Before any joins.
     assert_eq!(client.get_arena_state().survivors_count, 0);
@@ -1519,4 +1525,86 @@ fn get_arena_state_is_pure_read() {
     let state_a = client.get_arena_state();
     let state_b = client.get_arena_state();
     assert_eq!(state_a, state_b, "repeated calls must return identical state");
+}
+
+// ── Issue #275: explicit submission / participant bounds (N−1, N, N+1) ────────
+
+#[test]
+fn submission_boundary_n_minus_1_n_n_plus_1() {
+    let env = make_env();
+    let client = create_client(&env);
+    let cap = crate::bounds::MAX_SUBMISSIONS_PER_ROUND;
+    assert!(cap >= 3, "bounds must allow a three-point boundary test");
+
+    advance_ledger_with_auth(&env, 500);
+    client.init(&20);
+    client.start_round();
+
+    let n = cap - 1;
+    for _ in 0..n {
+        let p = Address::generate(&env);
+        client.submit_choice(&p, &1u32, &Choice::Heads);
+    }
+    assert_eq!(client.get_round().total_submissions, n);
+
+    let last_ok = Address::generate(&env);
+    client.submit_choice(&last_ok, &1u32, &Choice::Tails);
+    assert_eq!(client.get_round().total_submissions, cap);
+
+    let too_many = Address::generate(&env);
+    let err = client.try_submit_choice(&too_many, &1u32, &Choice::Heads);
+    assert_eq!(err, Err(Ok(ArenaError::MaxSubmissionsPerRound)));
+}
+
+#[test]
+fn join_boundary_participants_n_minus_1_n_n_plus_1() {
+    let (env, admin, client) = setup_with_admin();
+    let (_token, token_id) = setup_token(&env, &admin);
+    let asset = StellarAssetClient::new(&env, &token_id);
+    asset.mint(&client.address, &50_000_000i128);
+    client.set_token(&token_id);
+
+    // Use admin capacity so the test stays fast while still exercising typed `ArenaFull`.
+    const CAP: u32 = 50;
+    client.set_capacity(&CAP);
+
+    env.mock_all_auths();
+    for _ in 0..(CAP - 1) {
+        let p = Address::generate(&env);
+        asset.mint(&p, &1000i128);
+        client.join(&p, &100i128).unwrap();
+    }
+    assert_eq!(client.get_arena_state().survivors_count, CAP - 1);
+
+    let last_ok = Address::generate(&env);
+    asset.mint(&last_ok, &1000i128);
+    client.join(&last_ok, &100i128).unwrap();
+    assert_eq!(client.get_arena_state().survivors_count, CAP);
+
+    let too_many = Address::generate(&env);
+    asset.mint(&too_many, &1000i128);
+    let err = client.try_join(&too_many, &100i128);
+    assert_eq!(err, Err(Ok(ArenaError::ArenaFull)));
+}
+
+// ── Issue #277: round state machine invariant suite ───────────────────────────
+
+#[test]
+fn round_state_machine_invariant_suite_happy_path() {
+    let env = Env::default();
+    let client = create_client(&env);
+    set_ledger_sequence(&env, 100);
+    client.init(&5);
+    let r0 = client.get_round();
+    invariants::check_round_flags(&r0).unwrap();
+
+    let r1 = client.start_round();
+    invariants::check_round_flags(&r1).unwrap();
+    invariants::check_round_number_monotonic(r0.round_number, r1.round_number).unwrap();
+    invariants::check_submission_count_monotonic(r0.total_submissions, r1.total_submissions).unwrap();
+
+    set_ledger_sequence(&env, 106);
+    let r1t = client.timeout_round();
+    invariants::check_round_flags(&r1t).unwrap();
+    invariants::check_timeout_transition(&r1, &r1t).unwrap();
 }

@@ -1,5 +1,13 @@
 #![no_std]
 
+pub mod bounds;
+
+#[cfg(test)]
+pub(crate) mod invariants;
+
+#[cfg(test)]
+mod abi_guard;
+
 use soroban_sdk::{
     Address, BytesN, Env, Symbol, contract, contracterror, contractimpl, contracttype,
     symbol_short, token,
@@ -13,6 +21,8 @@ const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 const SURVIVOR_COUNT_KEY: Symbol = symbol_short!("S_COUNT");
 const CAPACITY_KEY: Symbol = symbol_short!("CAPACITY");
+/// Accumulated stake in instance storage (see `contract/DATA_MODEL.md`).
+const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE");
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
 
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
@@ -31,6 +41,10 @@ const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
 const TOPIC_GAME_ENDED: Symbol = symbol_short!("G_END");
+const TOPIC_ROUND_STARTED: Symbol = symbol_short!("R_START");
+const TOPIC_ROUND_TIMEOUT: Symbol = symbol_short!("R_TOUT");
+const TOPIC_WINNER_SET: Symbol = symbol_short!("WIN_SET");
+const TOPIC_CLAIM: Symbol = symbol_short!("CLAIM");
 
 // ── Error codes ───────────────────────────────────────────────────────────────
 
@@ -57,6 +71,8 @@ pub enum ArenaError {
     NotASurvivor = 17,
     GameAlreadyFinished = 18,
     TokenNotSet = 19,
+    /// Per-round submission storage would exceed [`bounds::MAX_SUBMISSIONS_PER_ROUND`](crate::bounds::MAX_SUBMISSIONS_PER_ROUND).
+    MaxSubmissionsPerRound = 20,
 }
 
 #[contracttype]
@@ -195,6 +211,8 @@ impl ArenaContract {
         admin.require_auth();
         storage(&env).set(&DataKey::Winner(player.clone()), &(stake, yield_comp));
         bump(&env, &DataKey::Winner(player));
+        env.events()
+            .publish((TOPIC_WINNER_SET,), (player.clone(), stake, yield_comp));
     }
 
     pub fn claim(env: Env, player: Address) -> Result<(), ArenaError> {
@@ -211,6 +229,9 @@ impl ArenaContract {
         let winner_data: Option<(i128, i128)> = storage(&env).get(&DataKey::Winner(player.clone()));
         match winner_data {
             Some((stake, yield_comp)) => {
+                let mut round = get_round(&env)?;
+                let round_number = round.round_number;
+
                 let token: Address = env
                     .storage()
                     .instance()
@@ -221,10 +242,15 @@ impl ArenaContract {
                 let total_payout = stake + yield_comp;
                 token_client.transfer(&env.current_contract_address(), &player, &total_payout);
 
+                env.events().publish(
+                    (TOPIC_CLAIM,),
+                    (player.clone(), total_payout, round_number),
+                );
+                env.events().publish((TOPIC_GAME_ENDED,), (round_number,));
+
                 storage(&env).set(&DataKey::Claimed(player.clone()), &true);
                 bump(&env, &DataKey::Claimed(player.clone()));
 
-                let mut round = get_round(&env)?;
                 round.finished = true;
                 storage(&env).set(&DataKey::Round, &round);
                 bump(&env, &DataKey::Round);
@@ -289,7 +315,7 @@ impl ArenaContract {
         let admin = Self::admin(env.clone());
         admin.require_auth();
         env.storage().instance().set(&PAUSED_KEY, &true);
-        env.events().publish((TOPIC_PAUSED,), ());
+        env.events().publish((TOPIC_PAUSED,), true);
     }
 
     /// Unpause the contract. Admin-only.
@@ -297,7 +323,7 @@ impl ArenaContract {
         let admin = Self::admin(env.clone());
         admin.require_auth();
         env.storage().instance().set(&PAUSED_KEY, &false);
-        env.events().publish((TOPIC_UNPAUSED,), ());
+        env.events().publish((TOPIC_UNPAUSED,), false);
     }
 
     /// Return whether the contract is paused.
@@ -352,6 +378,10 @@ impl ArenaContract {
     }
 
     pub fn join(env: Env, player: Address, amount: i128) -> Result<(), ArenaError> {
+        require_not_paused(&env)?;
+        env.storage()
+            .instance()
+            .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
         player.require_auth();
 
         if amount <= 0 {
@@ -363,31 +393,46 @@ impl ArenaContract {
             return Err(ArenaError::AlreadyJoined);
         }
 
-        // Token must be configured before players can join.
-        let token: Address = env
+        let configured_cap: u32 = env
             .storage()
             .instance()
-            .get(&TOKEN_KEY)
-            .ok_or(ArenaError::TokenNotSet)?;
+            .get(&CAPACITY_KEY)
+            .unwrap_or(0u32);
+        let effective_cap = if configured_cap == 0 {
+            bounds::MAX_ARENA_PARTICIPANTS
+        } else {
+            configured_cap.min(bounds::MAX_ARENA_PARTICIPANTS)
+        };
 
-        // Pull stake from player into this contract.
-        TokenClient::new(&env, &token).transfer(&player, &env.current_contract_address(), &amount);
-
-        // Register survivor.
-        storage(&env).set(&survivor_key, &());
-        bump(&env, &survivor_key);
-
-        // Increment survivor count.
         let count: u32 = env
             .storage()
             .instance()
             .get(&SURVIVOR_COUNT_KEY)
             .unwrap_or(0u32);
+
+        if count >= effective_cap {
+            return Err(ArenaError::ArenaFull);
+        }
+
+        // Token must be configured before players can join.
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(ArenaError::TokenNotSet)?;
+
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&player, &env.current_contract_address(), &amount);
+
+        // Register survivor.
+        storage(&env).set(&survivor_key, &());
+        bump(&env, &survivor_key);
+
         env.storage()
             .instance()
             .set(&SURVIVOR_COUNT_KEY, &(count + 1));
 
-        // Accumulate prize pool.
+        // Accumulate prize pool (instance storage).
         let pool: i128 = env
             .storage()
             .instance()
@@ -448,6 +493,15 @@ impl ArenaContract {
         storage(&env).set(&DataKey::Round, &next_round);
         bump(&env, &DataKey::Round);
 
+        env.events().publish(
+            (TOPIC_ROUND_STARTED,),
+            (
+                next_round.round_number,
+                next_round.round_start_ledger,
+                next_round.round_deadline_ledger,
+            ),
+        );
+
         Ok(next_round)
     }
 
@@ -463,6 +517,7 @@ impl ArenaContract {
     /// * [`ArenaError::NoActiveRound`] — No round is currently active.
     /// * [`ArenaError::SubmissionWindowClosed`] — Current ledger is past the round deadline.
     /// * [`ArenaError::SubmissionAlreadyExists`] — `player` already submitted in this round.
+    /// * [`ArenaError::MaxSubmissionsPerRound`] — [`bounds::MAX_SUBMISSIONS_PER_ROUND`](crate::bounds::MAX_SUBMISSIONS_PER_ROUND) reached for this round.
     ///
     /// # Authorization
     /// Requires `player.require_auth()` — the transaction must be signed by `player`.
@@ -495,6 +550,10 @@ impl ArenaContract {
         let submission_key = DataKey::Submission(round.round_number, player);
         if storage(&env).has(&submission_key) {
             return Err(ArenaError::SubmissionAlreadyExists);
+        }
+
+        if round.total_submissions >= bounds::MAX_SUBMISSIONS_PER_ROUND {
+            return Err(ArenaError::MaxSubmissionsPerRound);
         }
 
         storage(&env).set(&submission_key, &choice);
@@ -539,6 +598,11 @@ impl ArenaContract {
         round.timed_out = true;
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
+
+        env.events().publish(
+            (TOPIC_ROUND_TIMEOUT,),
+            (round.round_number, round.total_submissions, true),
+        );
 
         Ok(round)
     }
