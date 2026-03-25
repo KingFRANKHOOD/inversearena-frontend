@@ -13,6 +13,11 @@ const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
 const SURVIVOR_COUNT_KEY: Symbol = symbol_short!("S_COUNT");
 const CAPACITY_KEY: Symbol = symbol_short!("CAPACITY");
+const SCHEMA_VERSION_KEY: Symbol = symbol_short!("S_VER");
+
+/// Current schema version. Bump this when storage layout changes.
+const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
 
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
@@ -169,6 +174,10 @@ impl ArenaContract {
         );
         bump(&env, &DataKey::Round);
 
+        env.storage()
+            .instance()
+            .set(&SCHEMA_VERSION_KEY, &CURRENT_SCHEMA_VERSION);
+
         Ok(())
     }
 
@@ -303,6 +312,51 @@ impl ArenaContract {
     /// Return whether the contract is paused.
     pub fn is_paused(env: Env) -> bool {
         env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
+    }
+
+    // ── Schema versioning ────────────────────────────────────────────────────
+
+    /// Return the persisted schema version (0 if never set).
+    pub fn schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&SCHEMA_VERSION_KEY)
+            .unwrap_or(0u32)
+    }
+
+    /// Migrate storage from the current persisted version to
+    /// `CURRENT_SCHEMA_VERSION`. Admin-only.
+    ///
+    /// Each version bump should have its own migration block inside
+    /// this function. The version is written atomically at the end so
+    /// a failed transaction leaves the old version in place.
+    ///
+    /// Calling `migrate` when already at the current version is a no-op.
+    pub fn migrate(env: Env) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
+        admin.require_auth();
+
+        let stored: u32 = env
+            .storage()
+            .instance()
+            .get(&SCHEMA_VERSION_KEY)
+            .unwrap_or(0u32);
+
+        if stored >= CURRENT_SCHEMA_VERSION {
+            return; // already up to date
+        }
+
+        // -- v0 -> v1: initial version stamp (no data changes) ------
+        // Future migrations would go here as sequential if-blocks:
+        //   if stored < 2 { /* v1 -> v2 migration logic */ }
+
+        env.storage()
+            .instance()
+            .set(&SCHEMA_VERSION_KEY, &CURRENT_SCHEMA_VERSION);
     }
 
     /// Set the maximum player capacity for this arena. Admin-only.

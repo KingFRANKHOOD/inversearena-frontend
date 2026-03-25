@@ -507,3 +507,53 @@ fn test_get_arenas_pagination() {
     assert_eq!(page3.len(), 1);
     assert_eq!(page3.get(0).unwrap().pool_id, 5);
 }
+
+// ── Schema versioning tests ──────────────────────────────────────────────────
+
+/// initialize sets schema version to CURRENT_SCHEMA_VERSION.
+#[test]
+fn test_schema_version_set_on_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    assert_eq!(client.schema_version(), 1);
+}
+
+/// migrate is a no-op when already at current version.
+#[test]
+fn test_migrate_noop_when_current() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    // Already at v1, migrate should be a no-op.
+    client.migrate();
+    assert_eq!(client.schema_version(), 1);
+}
+
+/// migrate upgrades version 0 to current.
+#[test]
+fn test_migrate_from_v0() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    // Simulate a pre-versioning contract by clearing the version key.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&symbol_short!("S_VER"));
+    });
+    assert_eq!(client.schema_version(), 0);
+
+    client.migrate();
+    assert_eq!(client.schema_version(), 1);
+}

@@ -176,3 +176,47 @@ fn test_admin_returns_not_initialized_when_unset() {
     let result = client.try_admin();
     assert_eq!(result, Err(Ok(PayoutError::NotInitialized)));
 }
+
+// ── Schema versioning tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_schema_version_set_on_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(PayoutContract, ());
+    let client = PayoutContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+    assert_eq!(client.schema_version(), 1);
+}
+
+#[test]
+fn test_migrate_noop_when_current() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(PayoutContract, ());
+    let client = PayoutContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+    client.migrate();
+    assert_eq!(client.schema_version(), 1);
+}
+
+#[test]
+fn test_migrate_from_v0() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(PayoutContract, ());
+    let client = PayoutContractClient::new(&env, &contract_id);
+    client.initialize(&admin);
+
+    // Simulate a pre-versioning contract by clearing the version key.
+    env.as_contract(&contract_id, || {
+        env.storage().instance().remove(&symbol_short!("S_VER"));
+    });
+    assert_eq!(client.schema_version(), 0);
+
+    client.migrate();
+    assert_eq!(client.schema_version(), 1);
+}
