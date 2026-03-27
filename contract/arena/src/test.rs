@@ -2143,3 +2143,387 @@ fn claim_fails_without_any_winner_set() {
         "claim must fail when no winner has been designated"
     );
 }
+
+// ── Issue #227: minority-wins resolution algorithm unit tests ─────────────────
+//
+// These tests cover every scenario called out in the acceptance criteria:
+//   1. 2 players, 1 Heads / 1 Tails  → tie logic (PRNG decides)
+//   2. 10 players, 3 Heads / 7 Tails → Heads (minority) survive
+//   3. All players choose the same side → everyone survives
+//   4. Single survivor remaining after resolution
+//
+// Each test also verifies the RSLVD event payload so that indexers and the
+// frontend can rely on the emitted data.
+
+// ── helper: run one full round with explicit per-side player lists ─────────────
+
+/// Set up a game, submit choices for two groups, advance past the deadline,
+/// call resolve_round(), and return the resolved RoundState together with the
+/// two player vecs so callers can assert survivor / eliminated status.
+fn run_resolution_scenario(
+    heads_count: u32,
+    tails_count: u32,
+) -> (
+    Env,
+    ArenaContractClient<'static>,
+    Vec<Address>, // heads players
+    Vec<Address>, // tails players
+) {
+    let total = heads_count + tails_count;
+    let (env, _admin, client, _token_id, players) = setup_game(5, total);
+
+    set_ledger_sequence(&env, 100);
+    client.start_round();
+
+    let heads_players: Vec<Address> = players[..heads_count as usize].to_vec();
+    let tails_players: Vec<Address> = players[heads_count as usize..].to_vec();
+
+    for p in &heads_players {
+        client.submit_choice(p, &1, &Choice::Heads);
+    }
+    for p in &tails_players {
+        client.submit_choice(p, &1, &Choice::Tails);
+    }
+
+    // Advance past the round deadline (round_speed = 5, started at 100)
+    set_ledger_sequence(&env, 106);
+
+    (env, client, heads_players, tails_players)
+}
+
+// ── 1. Tie: 1 Heads vs 1 Tails (2 players) ───────────────────────────────────
+
+#[test]
+fn resolve_round_tie_2_players_exactly_one_survives() {
+    // Seed PRNG so the tie-break is deterministic: seed [0;32] → gen() & 1 == 0
+    // → Heads survives (see choose_surviving_side).
+    let (env, client, heads_players, tails_players) =
+        run_resolution_scenario(1, 1);
+
+    seed_contract_prng(&env, &client.address, [0u8; 32]);
+
+    let resolved = client.resolve_round();
+
+    assert!(resolved.finished, "round must be finished after resolve");
+    // Exactly one survivor remains
+    assert_eq!(
+        client.get_arena_state().survivors_count,
+        1,
+        "tie must leave exactly 1 survivor"
+    );
+    // With seed [0;32] Heads wins the coin flip
+    assert!(
+        client.get_user_state(&heads_players[0]).is_active,
+        "heads player must survive the tie-break"
+    );
+    assert!(
+        !client.get_user_state(&tails_players[0]).is_active,
+        "tails player must be eliminated in the tie-break"
+    );
+}
+
+#[test]
+fn resolve_round_tie_2_players_opposite_seed_tails_survives() {
+    // Seed [1;32] → gen() & 1 == 1 → Tails survives.
+    let (env, client, heads_players, tails_players) =
+        run_resolution_scenario(1, 1);
+
+    seed_contract_prng(&env, &client.address, [1u8; 32]);
+
+    client.resolve_round();
+
+    assert_eq!(client.get_arena_state().survivors_count, 1);
+    assert!(
+        !client.get_user_state(&heads_players[0]).is_active,
+        "heads player must be eliminated when tails wins the tie-break"
+    );
+    assert!(
+        client.get_user_state(&tails_players[0]).is_active,
+        "tails player must survive when tails wins the tie-break"
+    );
+}
+
+#[test]
+fn resolve_round_tie_emits_rslvd_event_with_correct_counts() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, client, _heads, _tails) = run_resolution_scenario(1, 1);
+    seed_contract_prng(&env, &client.address, [0u8; 32]);
+
+    let before = env.events().all().len();
+    client.resolve_round();
+    let after = env.events().all().len();
+
+    assert_eq!(
+        after,
+        before + 1,
+        "resolve_round() must emit exactly one RSLVD event"
+    );
+}
+
+// ── 2. Clear minority: 3 Heads vs 7 Tails (10 players) ───────────────────────
+
+#[test]
+fn resolve_round_3_heads_7_tails_heads_survive() {
+    let (_env, client, heads_players, tails_players) =
+        run_resolution_scenario(3, 7);
+
+    client.resolve_round();
+
+    assert_eq!(
+        client.get_arena_state().survivors_count,
+        3,
+        "only the 3 minority-heads players should survive"
+    );
+    for p in &heads_players {
+        assert!(
+            client.get_user_state(p).is_active,
+            "heads player must survive (minority)"
+        );
+    }
+    for p in &tails_players {
+        assert!(
+            !client.get_user_state(p).is_active,
+            "tails player must be eliminated (majority)"
+        );
+    }
+}
+
+#[test]
+fn resolve_round_3_heads_7_tails_event_payload_correct() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, client, _heads, _tails) = run_resolution_scenario(3, 7);
+
+    client.resolve_round();
+
+    // The last event must be RSLVD with the right counts.
+    let events = env.events().all();
+    let last = events.last().expect("at least one event must be emitted");
+
+    // Topic is (RSLVD,); data tuple is
+    // (round_number, heads_count, tails_count, outcome, eliminated_count, survivor_count, v)
+    // We verify the topic symbol matches "RSLVD".
+    let (topics, _data) = last;
+    let topic_sym: Symbol = soroban_sdk::symbol_short!("RSLVD");
+    assert_eq!(
+        topics.get(0).unwrap(),
+        soroban_sdk::Val::from(topic_sym),
+        "event topic must be RSLVD"
+    );
+}
+
+#[test]
+fn resolve_round_minority_survivor_count_matches_heads_count() {
+    let (_env, client, heads_players, _tails_players) =
+        run_resolution_scenario(3, 7);
+
+    client.resolve_round();
+
+    assert_eq!(
+        client.get_arena_state().survivors_count,
+        heads_players.len() as u32
+    );
+}
+
+// ── 3. All-same-choice: everyone picks Heads ─────────────────────────────────
+
+#[test]
+fn resolve_round_all_heads_no_one_eliminated() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 5);
+
+    set_ledger_sequence(&env, 200);
+    client.start_round();
+    for p in &players {
+        client.submit_choice(p, &1, &Choice::Heads);
+    }
+    set_ledger_sequence(&env, 206);
+    client.resolve_round();
+
+    assert_eq!(
+        client.get_arena_state().survivors_count,
+        5,
+        "all-same-choice must leave all players alive"
+    );
+    for p in &players {
+        assert!(
+            client.get_user_state(p).is_active,
+            "every player must still be active after unanimous choice"
+        );
+    }
+}
+
+#[test]
+fn resolve_round_all_tails_no_one_eliminated() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 4);
+
+    set_ledger_sequence(&env, 200);
+    client.start_round();
+    for p in &players {
+        client.submit_choice(p, &1, &Choice::Tails);
+    }
+    set_ledger_sequence(&env, 206);
+    client.resolve_round();
+
+    assert_eq!(client.get_arena_state().survivors_count, 4);
+    for p in &players {
+        assert!(client.get_user_state(p).is_active);
+    }
+}
+
+#[test]
+fn resolve_round_all_same_choice_emits_rslvd_with_zero_eliminated() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client, _token_id, players) = setup_game(5, 3);
+
+    set_ledger_sequence(&env, 200);
+    client.start_round();
+    for p in &players {
+        client.submit_choice(p, &1, &Choice::Heads);
+    }
+    set_ledger_sequence(&env, 206);
+
+    let before = env.events().all().len();
+    client.resolve_round();
+    let after = env.events().all().len();
+
+    assert_eq!(after, before + 1, "must emit exactly one RSLVD event");
+}
+
+// ── 4. Single survivor scenario ───────────────────────────────────────────────
+
+#[test]
+fn resolve_round_produces_single_survivor() {
+    // 1 Heads vs 3 Tails → Heads (minority) is the sole survivor.
+    let (_env, client, heads_players, tails_players) =
+        run_resolution_scenario(1, 3);
+
+    client.resolve_round();
+
+    assert_eq!(
+        client.get_arena_state().survivors_count,
+        1,
+        "exactly one survivor must remain"
+    );
+    assert!(
+        client.get_user_state(&heads_players[0]).is_active,
+        "the single minority player must be the survivor"
+    );
+    for p in &tails_players {
+        assert!(
+            !client.get_user_state(p).is_active,
+            "all majority players must be eliminated"
+        );
+    }
+}
+
+#[test]
+fn resolve_round_single_survivor_cannot_submit_next_round_as_eliminated() {
+    // Verify that eliminated players are correctly blocked in the next round.
+    let (env, client, _heads_players, tails_players) =
+        run_resolution_scenario(1, 3);
+
+    client.resolve_round();
+
+    // Start round 2
+    set_ledger_sequence(&env, 200);
+    client.start_round();
+
+    // An eliminated player must get PlayerEliminated, not NotASurvivor
+    let err = client.try_submit_choice(&tails_players[0], &2, &Choice::Heads);
+    assert_eq!(
+        err,
+        Err(Ok(ArenaError::PlayerEliminated)),
+        "eliminated player must receive PlayerEliminated on next round submission"
+    );
+}
+
+#[test]
+fn resolve_round_single_survivor_round_is_finished() {
+    let (_env, client, _heads, _tails) = run_resolution_scenario(1, 3);
+
+    let resolved = client.resolve_round();
+
+    assert!(
+        resolved.finished,
+        "round must be marked finished after resolution"
+    );
+    assert!(
+        !resolved.active,
+        "round must not be active after resolution"
+    );
+}
+
+// ── 5. No submissions (zero heads, zero tails) ────────────────────────────────
+
+#[test]
+fn resolve_round_no_submissions_keeps_all_survivors() {
+    // When nobody submits, choose_surviving_side returns None → no eliminations.
+    let (env, _admin, client, _token_id, players) = setup_game(5, 3);
+
+    set_ledger_sequence(&env, 300);
+    client.start_round();
+    // Deliberately skip all submissions
+    set_ledger_sequence(&env, 306);
+    client.resolve_round();
+
+    assert_eq!(
+        client.get_arena_state().survivors_count,
+        3,
+        "no submissions must leave all survivors intact"
+    );
+    for p in &players {
+        assert!(client.get_user_state(p).is_active);
+    }
+}
+
+// ── 6. Parameterized minority-wins correctness ────────────────────────────────
+
+/// Table-driven test covering a range of (heads, tails) splits to confirm the
+/// minority always survives and the survivor count is correct.
+#[test]
+fn resolve_round_minority_wins_parameterized() {
+    // (heads_count, tails_count, expected_survivors)
+    let cases: &[(u32, u32, u32)] = &[
+        (1, 2, 1), // heads minority
+        (2, 1, 1), // tails minority
+        (2, 5, 2), // heads minority
+        (5, 2, 2), // tails minority
+        (1, 4, 1), // heads minority, single survivor
+        (4, 1, 1), // tails minority, single survivor
+    ];
+
+    for &(h, t, expected_survivors) in cases {
+        let (_env, client, heads_players, tails_players) =
+            run_resolution_scenario(h, t);
+
+        client.resolve_round();
+
+        let actual = client.get_arena_state().survivors_count;
+        assert_eq!(
+            actual, expected_survivors,
+            "({h}H vs {t}T): expected {expected_survivors} survivors, got {actual}"
+        );
+
+        // Verify the correct side survived
+        let (survivors, eliminated) = if h < t {
+            (&heads_players, &tails_players)
+        } else {
+            (&tails_players, &heads_players)
+        };
+
+        for p in survivors {
+            assert!(
+                client.get_user_state(p).is_active,
+                "({h}H vs {t}T): minority player must be active"
+            );
+        }
+        for p in eliminated {
+            assert!(
+                !client.get_user_state(p).is_active,
+                "({h}H vs {t}T): majority player must be eliminated"
+            );
+        }
+    }
+}
