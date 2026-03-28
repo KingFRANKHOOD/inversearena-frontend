@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Round state machine invariants (issue #277). Used by unit tests; keep pure (no `Env`).
 //!
 //! Violations should fail CI via `#[test]` callers in `test.rs`.

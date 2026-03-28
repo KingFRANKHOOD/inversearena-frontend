@@ -2335,10 +2335,6 @@ fn resolve_round_3_heads_7_tails_event_payload_correct() {
     // The last event must be RSLVD with the right counts.
     let events = env.events().all();
     let last = events.last().expect("at least one event must be emitted");
-
-    // Topic is (RSLVD,); data tuple is
-    // (round_number, heads_count, tails_count, outcome, eliminated_count, survivor_count, v)
-    // We verify the topic symbol matches "RSLVD".
     let (_contract, topics, _data) = last;
     let topic_sym: Symbol = soroban_sdk::symbol_short!("RSLVD");
     let got: Symbol = topics.get(0).unwrap().into_val(&env);

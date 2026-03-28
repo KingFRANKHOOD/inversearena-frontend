@@ -146,6 +146,7 @@ enum DataKey {
     Winner(Address),
 }
 
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -388,6 +389,18 @@ impl ArenaContract {
             timed_out: false,
             finished: false,
         };
+
+        #[cfg(debug_assertions)]
+        {
+            crate::invariants::check_round_flags(&next_round)
+                .expect("start_round: round flags invariant violated");
+            crate::invariants::check_round_number_monotonic(
+                previous_round.round_number,
+                next_round.round_number,
+            )
+            .expect("start_round: round number monotonic invariant violated");
+        }
+
         storage(&env).set(&DataKey::Round, &next_round);
         bump(&env, &DataKey::Round);
         env.events().publish(
@@ -425,6 +438,9 @@ impl ArenaContract {
         }
 
         let mut round = get_round(&env)?;
+        #[cfg(debug_assertions)]
+        let before_submissions = round.total_submissions;
+
         if !round.active {
             return Err(ArenaError::NoActiveRound);
         }
@@ -452,6 +468,18 @@ impl ArenaContract {
         storage(&env).set(&submitters_key, &submitters);
         bump(&env, &submitters_key);
         round.total_submissions += 1;
+
+        #[cfg(debug_assertions)]
+        {
+            crate::invariants::check_submission_count_monotonic(
+                before_submissions,
+                round.total_submissions,
+            )
+            .expect("submit_choice: submission count monotonic invariant violated");
+            crate::invariants::check_round_flags(&round)
+                .expect("submit_choice: round flags invariant violated");
+        }
+
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
         Ok(())
@@ -463,6 +491,9 @@ impl ArenaContract {
             .instance()
             .extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
         let mut round = get_round(&env)?;
+        #[cfg(debug_assertions)]
+        let before = round.clone();
+
         if !round.active {
             return Err(ArenaError::NoActiveRound);
         }
@@ -471,6 +502,17 @@ impl ArenaContract {
         }
         round.active = false;
         round.timed_out = true;
+
+        #[cfg(debug_assertions)]
+        {
+            crate::invariants::check_timeout_transition(&before, &round)
+                .expect("timeout_round: timeout transition invariant violated");
+            crate::invariants::check_round_flags(&round)
+                .expect("timeout_round: round flags invariant violated");
+            crate::invariants::check_round_number_monotonic(before.round_number, round.round_number)
+                .expect("timeout_round: round number monotonic invariant violated");
+        }
+
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
         env.events().publish(
@@ -494,6 +536,9 @@ impl ArenaContract {
             return Err(ArenaError::GameAlreadyFinished);
         }
         let mut round = get_round(&env)?;
+        #[cfg(debug_assertions)]
+        let before_round_number = round.round_number;
+
         if round.finished {
             return Err(ArenaError::NoActiveRound);
         }
@@ -544,6 +589,18 @@ impl ArenaContract {
             .set(&SURVIVOR_COUNT_KEY, &updated_survivor_count);
 
         round.finished = true;
+
+        #[cfg(debug_assertions)]
+        {
+            crate::invariants::check_round_flags(&round)
+                .expect("resolve_round: round flags invariant violated");
+            crate::invariants::check_round_number_monotonic(
+                before_round_number,
+                round.round_number,
+            )
+            .expect("resolve_round: round number monotonic invariant violated");
+        }
+
         storage(&env).set(&DataKey::Round, &round);
         bump(&env, &DataKey::Round);
 
