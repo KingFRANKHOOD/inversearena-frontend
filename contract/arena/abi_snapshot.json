@@ -30,7 +30,8 @@
     "TimelockNotExpired": 26,
     "GameNotFinished": 27,
     "TokenConfigurationLocked": 28,
-    "UpgradeAlreadyPending": 29
+    "UpgradeAlreadyPending": 29,
+    "WinnerAlreadySet": 30
   },
   "event_topics": [
     "UP_PROP",

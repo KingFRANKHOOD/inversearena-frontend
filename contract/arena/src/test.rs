@@ -1895,17 +1895,27 @@ fn claim_rejects_before_game_is_finished() {
 }
 
 #[test]
-fn claim_second_set_winner_adds_to_prize_pool() {
-    let (env, _admin, client, token_id, winner) = setup_finished_game_with_winner(0i128);
-    // Pool starts with 300 (3 players × 100) + 0 (prize_amount) = 300.
-    // set_winner now adds to existing pool instead of overwriting.
-    let asset = StellarAssetClient::new(&env, &token_id);
-    asset.mint(&client.address, &700i128); // total contract balance = 300 + 700 = 1000
-    client.set_winner(&winner, &200i128, &100i128); // pool = 300 + 300 = 600
-    client.set_winner(&winner, &150i128, &50i128); // pool = 600 + 200 = 800
+fn claim_second_set_winner_overwrites_prize_pool() {
+    let (_env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(0i128);
 
+    let err = client.try_set_winner(&winner, &200i128, &100i128);
+    assert_eq!(err, Err(Ok(ArenaError::WinnerAlreadySet)));
+
+    // Original pool remains claimable by the original winner.
     let claimed = client.claim(&winner);
-    assert_eq!(claimed, 800i128);
+    assert_eq!(claimed, 300i128);
+}
+
+#[test]
+fn set_winner_twice_returns_error() {
+    let (env, _admin, client, _token_id, winner) = setup_finished_game_with_winner(0i128);
+    let second = Address::generate(&env);
+
+    let err = client.try_set_winner(&second, &50i128, &25i128);
+    assert_eq!(err, Err(Ok(ArenaError::WinnerAlreadySet)));
+
+    let prize = client.claim(&winner);
+    assert_eq!(prize, 300i128);
 }
 
 #[test]

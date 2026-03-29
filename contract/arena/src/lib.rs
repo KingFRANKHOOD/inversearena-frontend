@@ -20,6 +20,7 @@ const TOKEN_KEY: Symbol = symbol_short!("TOKEN");
 const PRIZE_POOL_KEY: Symbol = symbol_short!("PRIZE_P");
 const GAME_STATUS_KEY: Symbol = symbol_short!("G_STATUS");
 const GAME_FINISHED_KEY: Symbol = symbol_short!("G_FIN");
+const WINNER_SET_KEY: Symbol = symbol_short!("W_SET");
 
 // ── Timelock: 48 hours in seconds ─────────────────────────────────────────────
 const TIMELOCK_PERIOD: u64 = 48 * 60 * 60;
@@ -78,6 +79,7 @@ pub enum ArenaError {
     GameNotFinished = 27,
     TokenConfigurationLocked = 28,
     UpgradeAlreadyPending = 29,
+    WinnerAlreadySet = 30,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -304,6 +306,14 @@ impl ArenaContract {
         require_not_paused(&env)?;
         let admin = Self::admin(env.clone());
         admin.require_auth();
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&WINNER_SET_KEY)
+            .unwrap_or(false)
+        {
+            return Err(ArenaError::WinnerAlreadySet);
+        }
         if stake < 0 || yield_comp < 0 {
             return Err(ArenaError::InvalidAmount);
         }
@@ -312,6 +322,7 @@ impl ArenaContract {
             .ok_or(ArenaError::InvalidAmount)?;
         storage(&env).set(&DataKey::Winner(player.clone()), &());
         bump(&env, &DataKey::Winner(player.clone()));
+        env.storage().instance().set(&WINNER_SET_KEY, &true);
         let existing_pool: i128 = env
             .storage()
             .instance()

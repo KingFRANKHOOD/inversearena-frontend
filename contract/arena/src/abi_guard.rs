@@ -46,6 +46,7 @@ fn arena_error_codes_match_abi_snapshot() {
         ("GameNotFinished", ArenaError::GameNotFinished),
         ("TokenConfigurationLocked", ArenaError::TokenConfigurationLocked),
         ("UpgradeAlreadyPending", ArenaError::UpgradeAlreadyPending),
+        ("WinnerAlreadySet", ArenaError::WinnerAlreadySet),
     ];
 
     assert_eq!(
