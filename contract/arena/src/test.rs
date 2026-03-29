@@ -1816,6 +1816,21 @@ fn join_rejects_amounts_that_do_not_match_required_stake() {
 }
 
 #[test]
+fn init_rejects_stake_below_minimum() {
+    let (_env, _admin, client) = setup_with_admin();
+    // In test builds MIN_REQUIRED_STAKE = 1, so 0 is below the floor.
+    let err = client.try_init(&5, &0);
+    assert_eq!(err, Err(Ok(ArenaError::InvalidAmount)));
+}
+
+#[test]
+fn init_accepts_stake_at_minimum() {
+    let (_env, _admin, client) = setup_with_admin();
+    // In test builds MIN_REQUIRED_STAKE = 1.
+    client.init(&5, &bounds::MIN_REQUIRED_STAKE);
+}
+
+#[test]
 fn set_token_rejects_changes_after_first_join() {
     let (env, admin, client) = setup_with_admin();
     let (_old_token, old_token_id) = setup_token(&env, &admin);
